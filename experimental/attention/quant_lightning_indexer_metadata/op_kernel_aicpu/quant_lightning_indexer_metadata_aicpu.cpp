@@ -172,20 +172,11 @@ void QuantLightningIndexerMetadataCpuKernel::CalcSplitInfo(SplitContext &splitCo
             splitInfo.isKvSeqAllZero = false;
         }
     }
-    if (maxS2Size_ > sparseCount_) {
-        supportFd_ = true;
-        return;
-    }
-    validSocVersion_ = ProcessSocVersion();
-    if (validSocVersion_ == ValidSocVersion::ASCEND910B) {
-        if (maxS2Size_ > 2 * s2BaseSize_) {
-            supportFd_ = true;
-        }
-    } else if (validSocVersion_ == ValidSocVersion::ASCEND950) {
-        if (maxS2Size_ > 5 * s2BaseSize_) {
-            supportFd_ = true;
-        }
-    }
+    // 形状无关：FD 切分不能由 maxS2Size_（随 M/query 长度变化）决定。
+    // supportFd_ 的两种路径（true=跨核 S2 切分 + LD 归约，false=整行分配）在等值
+    // top-k 上可能选出不同索引，按形状翻转会使选中索引随形状变化。此处固定为单一
+    // 常量，使小形状（M≈1e3）与大形状（M≈1.7e4）走完全相同的路径。
+    supportFd_ = false;
 }
 
 int64_t QuantLightningIndexerMetadataCpuKernel::CalcPreTokenLeftUp(uint32_t s1Size, uint32_t s2Size)
