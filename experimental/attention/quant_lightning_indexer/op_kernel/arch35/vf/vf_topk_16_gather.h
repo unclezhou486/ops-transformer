@@ -303,6 +303,13 @@ __simd_vf__ void FindValueOutputVFImpl(__ubuf__ uint16_t* outputValueBuf, __ubuf
 
 /**
     输出最终的Idx
+    CANONICAL TIE-BREAK NOTE (cross-trunk merge, within one core):
+    LiTopKGatherVF feeds LiTopKVF the concatenation [history topK][current trunk],
+    where "history" holds the topK of EARLIER trunks (strictly smaller absolute key
+    indices) and the current trunk holds larger absolute indices. LiTopKVF breaks
+    equal scores by ascending POSITION in that concatenation, which is therefore
+    exactly ascending ABSOLUTE key index. So the cross-trunk merge is already
+    position-deterministic; no extra tie-break pass is required here.
  */
 __simd_vf__ void FindRealIndexVFImpl(__ubuf__ uint32_t* outputIdxBuf, __ubuf__ uint16_t* tmpIdxBuf, __ubuf__ uint32_t* hisIdxBuf, uint32_t topK, uint32_t loopIndex, uint16_t vfLoop)
 {
@@ -396,6 +403,13 @@ __aicore__ inline void LiTopKVF(const LocalTensor<uint16_t>& tmpIdxLocal,
 
 /**
     LD:输出最终的Idx
+    CANONICAL TIE-BREAK NOTE (cross-core merge): this is a pure gather of the
+    absolute key index (hisIdxBuf = ldIndexLocal) keyed by tmpIdx. The tie-break
+    (equal-score ordering) happens in LiTopKVF's GT/EQ pass by POSITION = workspace
+    order, which is NOT guaranteed to equal ascending absolute key index. The
+    canonical correction for the LD path is applied by the caller LITopk<uint16_t>::
+    LdTopK (see quant_lightning_indexer_topk.h), which re-sorts the equal-score
+    boundary by absolute key index after the gather.
 */
 __simd_vf__ void FindLDRealIndexVFImpl(__ubuf__ uint32_t* outputIdxBuf, __ubuf__ uint16_t* tmpIdxBuf, __ubuf__ uint32_t* hisIdxBuf, uint16_t vfLoop)
 {

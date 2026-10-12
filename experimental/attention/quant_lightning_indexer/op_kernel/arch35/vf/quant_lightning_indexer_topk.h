@@ -176,6 +176,41 @@ public:
         topkb16gather::LiTopKVF<true>(tmpIndexLocal, hisValueLocal, mrgValueLocal, histogramsLocal, idxHighLocal, idxLowLocal, nkValueLocal, topK, s2SeqLen);
         PipeBarrier<PIPE_V>();
         topkb16gather::LiTopKLDGatherVF(indicesOutLocal, tmpIndexLocal, indexLocal, topK);
+
+        // CANDIDATE (unverified): canonical cross-core (LD) tie-break by ABSOLUTE key index.
+        //
+        // The histogram top-k (LiTopKVF) breaks equal scores by ascending POSITION in
+        // the merged workspace, i.e. by workspace/core order. That order depends on the
+        // s1-dependent S2 decomposition, so on an exact tie the selected key can flip
+        // when the call length changes. To make selection depend only on the data,
+        // re-sort the equal-score boundary (score == kth) by ASCENDING ABSOLUTE key index.
+        //
+        // After the gather, hisValueLocal[k] and indicesOutLocal[k] are parallel
+        // (value, absolute-index) pairs sorted by (value desc, position asc). The
+        // boundary suffix is the maximal run where value == kth value; insertion-sort it
+        // by absolute index (ascending). Positions >= topK are untouched (padding).
+        // Padding indices are -1 == 0xFFFFFFFF as uint32, so they sort last. Correct.
+        PipeBarrier<PIPE_V>();
+        if (topK > 1) {
+            uint16_t kthValue = hisValueLocal.GetValue(topK - 1);
+            uint32_t boundary = 0;
+            while (boundary < topK && hisValueLocal.GetValue(boundary) != kthValue) {
+                ++boundary;
+            }
+            for (uint32_t i = boundary + 1; i < topK; ++i) {
+                uint32_t keyIdx = indicesOutLocal.GetValue(i);
+                uint16_t keyVal = hisValueLocal.GetValue(i);
+                uint32_t j = i;
+                while (j > boundary && indicesOutLocal.GetValue(j - 1) > keyIdx) {
+                    indicesOutLocal.SetValue(j, indicesOutLocal.GetValue(j - 1));
+                    hisValueLocal.SetValue(j, hisValueLocal.GetValue(j - 1));
+                    --j;
+                }
+                indicesOutLocal.SetValue(j, keyIdx);
+                hisValueLocal.SetValue(j, keyVal);
+            }
+        }
+        PipeBarrier<PIPE_V>();
     }
 
 private:
