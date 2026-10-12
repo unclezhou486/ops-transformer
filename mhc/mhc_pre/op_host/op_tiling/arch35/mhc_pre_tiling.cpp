@@ -810,15 +810,27 @@ void MhcPreBaseTiling::FillTilingData()
 
 ge::graphStatus MhcPreBaseTiling::TilingProcess()
 {
-    // Batch-consistency level 3 requires the BS accumulation order. Other modes prefer M-K when the shape is
-    // supported, then fall back to the ND/BS threshold policy.
-    if (context_->GetDeterministicLevel() == BATCH_CONSISTENCY_LEVEL) {
-        tilingMode_ = TilingMode::SPLIT_BS;
-    } else if (CanUseMk()) {
-        tilingMode_ = TilingMode::SPLIT_M_K;
-    } else {
-        tilingMode_ = totalLength_ <= DECODE_BS_THRESHOLD ? TilingMode::SPLIT_ND : TilingMode::SPLIT_BS;
-    }
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // SHAPE-INVARIANT K-REDUCTION  [CANDIDATE FIX — NOT yet device-confirmed]
+    //
+    // Root cause of the hit != miss divergence: the tiling mode used to depend on M (totalLength_).
+    // The M-K path (SPLIT_M_K) splits K across cores with kDim = activeCoreNum / minMDim, and
+    // minMDim = min(activeCoreNum, ceil(M / 256)) grows with M (see CalculateMkTiling). So the very
+    // same math accumulated its K partials in a DIFFERENT order depending on M:
+    //   * cache-MISS full prefill   M = 17523 (> M_K_MAX_VALIDATED_TOTAL_LENGTH = 10240) -> SPLIT_BS
+    //   * cache-HIT  suffix prefill M = 1139  (<= 10240)                               -> SPLIT_M_K
+    // Different K accumulation order produces a small fp32 rounding difference on identical inputs,
+    // which is the suspected seed of the hit != miss (P* = 17598) difference.
+    //
+    // Fix: take SPLIT_BS for every M. The BS path emits its ordered K partials at a FIXED 1024-element
+    // boundary (MHC_PRE_BS_SEQUENTIAL_PARTIAL_K) regardless of M, so every shape reduces K in the same
+    // order. SPLIT_BS is already the accumulation order required by BATCH_CONSISTENCY_LEVEL == 3, i.e.
+    // it is the validated single-order path; forcing it for all levels makes that order unconditional.
+    // The math is unchanged — only the K reduction partition changes. SPLIT_M_K is no longer selected
+    // (CanUseMk/CalculateMkTiling stay compiled but unreachable); the ND/BS/M-K kernels remain
+    // registered so rollback is just reinstalling the previous package.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    tilingMode_ = TilingMode::SPLIT_BS;
 
     switch (tilingMode_) {
         case TilingMode::SPLIT_BS:
